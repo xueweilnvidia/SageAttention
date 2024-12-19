@@ -18,12 +18,12 @@ import torch
 import triton
 import triton.language as tl
 
-from .triton.quant_per_block import per_block_int8 as per_block_int8_triton
+from .triton.quant_per_block_qkv_allfp8 import per_block_int8_qkv as per_block_int8_triton
 from .triton.quant_per_block_varlen import per_block_int8 as per_block_int8_varlen_triton
 from .triton.quant_per_block_hd96 import per_block_int8_hd96
 from .triton.attn_qk_int8_per_block_h96 import forward as attn_h96_false
 from .triton.attn_qk_int8_per_block_h96_causal import forward as attn_h96_true
-from .triton.attn_qk_int8_per_block import forward as attn_false
+from .triton.attn_qk_int8_per_block_h64_qkv_allfp8 import forward as attn_false
 from .triton.attn_qk_int8_per_block_causal import forward as attn_true
 from .triton.attn_qk_int8_block_varlen import forward as attn_false_varlen
 from .triton.attn_qk_int8_per_block_causal_varlen import forward as attn_true_varlen
@@ -238,7 +238,8 @@ def sageattn_qk_int8_pv_fp16_triton(
             o, lse = attn_h96_false(q_int8, k_int8, v, q_scale, k_scale, tensor_layout=tensor_layout, output_dtype=dtype, return_lse=return_lse)
     else:
         if quantization_backend == "triton":
-            q_int8, q_scale, k_int8, k_scale = per_block_int8_triton(q, k, km=km, sm_scale=sm_scale, tensor_layout=tensor_layout)
+            print("hello")
+            q_int8, q_scale, k_int8, k_scale, v_int8, v_scale = per_block_int8_triton(q, k, v)
         elif quantization_backend == "cuda":
             q_int8, q_scale, k_int8, k_scale = per_block_int8_cuda(q, k, km=km, sm_scale=sm_scale, tensor_layout=tensor_layout)
         else:
@@ -246,7 +247,8 @@ def sageattn_qk_int8_pv_fp16_triton(
         if is_causal:
             o, lse = attn_true(q_int8, k_int8, v, q_scale, k_scale, tensor_layout=tensor_layout, output_dtype=dtype, return_lse=return_lse)
         else:
-            o, lse = attn_false(q_int8, k_int8, v, q_scale, k_scale, tensor_layout=tensor_layout, output_dtype=dtype, return_lse=return_lse)
+            print("hello")
+            o = attn_false(q_int8, k_int8, v_int8, q_scale, k_scale, v_scale)
 
     if return_lse:
         return o, lse / 1.44269504 + lse_correction * sm_scale if smooth_k else lse / 1.44269504
