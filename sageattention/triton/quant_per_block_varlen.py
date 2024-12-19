@@ -50,16 +50,22 @@ def quant_per_block_int8_kernel(Input, Output, Scale,
     x = tl.load(input_ptrs, mask=offs_n[:, None] < L)
     x = x.to(tl.float32)
     x *= sm_scale
-    scale = tl.max(tl.abs(x)) / 127.
-    x_int8 = x / scale
-    x_int8 += 0.5 * tl.where(x_int8 >= 0, 1, -1)
-    x_int8 = x_int8.to(tl.int8)
-    tl.store(output_ptrs, x_int8, mask=offs_n[:, None] < L)
+    # scale = tl.max(tl.abs(x)) / 127.
+    # x_int8 = x / scale
+    # x_int8 += 0.5 * tl.where(x_int8 >= 0, 1, -1)
+    # x_int8 = x_int8.to(tl.int8)
+    scale = tl.max(tl.abs(x)) / 448.
+    x_fp8 = x / scale
+    x_fp8 = x_fp8.to(tl.float8e4nv)
+
+    tl.store(output_ptrs, x_fp8, mask=offs_n[:, None] < L)
     tl.store(scale_ptrs, scale)
 
-def per_block_int8(q, k, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, BLKQ=128, BLKK=64, sm_scale=None):
-    q_int8 = torch.empty(q.shape, dtype=torch.int8, device=q.device)
-    k_int8 = torch.empty(k.shape, dtype=torch.int8, device=k.device)
+# suppose k,v  have same size
+def per_block_int8(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, BLKQ=128, BLKK=64, sm_scale=None):
+    q_fp8 = torch.empty(q.shape, dtype=torch.float8_e4m3fn, device=q.device)
+    k_fp8 = torch.empty(k.shape, dtype=torch.float8_e4m3fn, device=k.device)
+    v_fp8 = torch.empty(v.shape, dtype=torch.float8_e4m3fn, device=v.device)
 
     h_qo = q.shape[1]
     h_kv = k.shape[1]
@@ -68,37 +74,50 @@ def per_block_int8(q, k, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
     b = cu_seqlens_q.shape[0] - 1
     q_batch_len = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
     k_batch_len = cu_seqlens_k[1:] - cu_seqlens_k[:-1]
+    v_batch_len = k_batch_len
 
     q_scale_len = (q_batch_len + BLKQ - 1) // BLKQ
     k_scale_len = (k_batch_len + BLKK - 1) // BLKK
+    v_scale_len = k_scale_len
 
     cu_seqlens_q_scale = torch.nn.functional.pad(torch.cumsum(q_scale_len, dim=0), (1, 0), value=0)
     cu_seqlens_k_scale = torch.nn.functional.pad(torch.cumsum(k_scale_len, dim=0), (1, 0), value=0)
+    cu_seqlens_v_scale = torch.nn.functional.pad(torch.cumsum(v_scale_len, dim=0), (1, 0), value=0)
 
     q_scale = torch.empty((cu_seqlens_q_scale[-1], h_qo), device=q.device, dtype=torch.float32)
     k_scale = torch.empty((cu_seqlens_k_scale[-1], h_kv), device=k.device, dtype=torch.float32)
+    v_scale = torch.empty((cu_seqlens_v_scale[-1], h_kv), device=v.device, dtype=torch.float32)
 
     if sm_scale is None:
         sm_scale = head_dim**-0.5
 
     grid = ((max_seqlen_q + BLKQ - 1) // BLKQ, h_qo, b)
     quant_per_block_int8_kernel[grid](
-        q, q_int8, q_scale,
+        q, q_fp8, q_scale,
         cu_seqlens_q, cu_seqlens_q_scale,
         q.stride(1), q.stride(0),
-        q_int8.stride(1), q_int8.stride(0),
+        q_fp8.stride(1), q_fp8.stride(0),
         sm_scale=(sm_scale * 1.44269504), H=h_qo,
         C=head_dim, BLK=BLKQ
     )
 
     grid = ((max_seqlen_k + BLKK - 1) // BLKK, h_kv, b)
     quant_per_block_int8_kernel[grid](
-        k, k_int8, k_scale,
+        k, k_fp8, k_scale,
         cu_seqlens_k, cu_seqlens_k_scale,
         k.stride(1), k.stride(0),
-        k_int8.stride(1), k_int8.stride(0),
+        k_fp8.stride(1), k_fp8.stride(0),
         sm_scale=1.0, H=h_kv,
         C=head_dim, BLK=BLKK
     )
 
-    return q_int8, q_scale, k_int8, k_scale, cu_seqlens_q_scale, cu_seqlens_k_scale
+    quant_per_block_int8_kernel[grid](
+        v, v_fp8, v_scale,
+        cu_seqlens_k, cu_seqlens_v_scale,
+        v.stride(1), v.stride(0),
+        v_fp8.stride(1), v_fp8.stride(0),
+        sm_scale=1.0, H=h_kv,
+        C=head_dim, BLK=BLKK
+    )
+
+    return q_fp8, q_scale, k_fp8, k_scale, v_fp8, v_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, cu_seqlens_v_scale

@@ -17,7 +17,6 @@ limitations under the License.
 import torch
 import triton
 import triton.language as tl
-import torch.distributed as dist
 
 from .triton.quant_per_block import per_block_int8 as per_block_int8_triton
 from .triton.quant_per_block_varlen import per_block_int8 as per_block_int8_varlen_triton
@@ -41,7 +40,6 @@ from .quant import per_channel_fp8
 
 from typing import Any, List, Literal, Optional, Tuple, Union
 import warnings
-
 
 def get_cuda_arch_versions():
     cuda_archs = []
@@ -332,21 +330,31 @@ def sageattn_varlen(
     assert q.stride(-1) == 1 and k.stride(-1) == 1 and v.stride(-1) == 1, "Last dim of qkv must be contiguous."
     assert cu_seqlens_q.is_contiguous() and cu_seqlens_k.is_contiguous(), "cu_seqlens_q and cu_seqlens_k must be contiguous."
 
-    if dtype == torch.bfloat16 or dtype == torch.float32:
-        v = v.to(torch.float16)
+    # if dtype == torch.bfloat16 or dtype == torch.float32:
+    #     v = v.to(torch.float16)
 
     if smooth_k:
         km = k.mean(dim=0, keepdim=True) # ! km is calculated on the all the batches. Calculate over each individual sequence requires dedicated kernel.
-        k = k - km
+        k -= km
 
-    q_int8, q_scale, k_int8, k_scale, cu_seqlens_q_scale, cu_seqlens_k_scale = per_block_int8_varlen_triton(q, k, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, sm_scale=sm_scale)
+    q_fp8, q_scale, k_fp8, k_scale, v_fp8, v_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, cu_seqlens_v_scale = per_block_int8_varlen_triton(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, sm_scale=sm_scale)
 
-    if is_causal:
-        o = attn_true_varlen(q_int8, k_int8, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, q_scale, k_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, output_dtype=dtype)
-    else:
-        o = attn_false_varlen(q_int8, k_int8, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, q_scale, k_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, output_dtype=dtype)
+    # print(v)
+    # print(q_fp8.dtype)
+    # print(k_fp8.dtype)
+    # print(v_fp8.dtype)
+    # print(v_fp8.to(torch.float32)* v_scale[0][0])
+    # print(v_scale)
+    # print("cu_seqlens_k_scale", cu_seqlens_k_scale)
+    # print("cu_seqlens_v_scale", cu_seqlens_v_scale)
+    # print("finished")
 
-    return o
+    # if is_causal:
+    #     o = attn_true_varlen(q_fp8, k_fp8, v_fp8, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, q_scale, k_scale, v_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, output_dtype=dtype)
+    # else:
+    o = attn_false_varlen(q_fp8, k_fp8, v_fp8, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, q_scale, k_scale, v_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, output_dtype=dtype)
+
+    return o 
 
 def sageattn_qk_int8_pv_fp16_cuda(
     q: torch.Tensor, 
@@ -438,14 +446,7 @@ def sageattn_qk_int8_pv_fp16_cuda(
     assert dtype in [torch.float16, torch.bfloat16], "Input tensors must be in dtype of torch.float16 or torch.bfloat16"
     assert q.device == k.device == v.device, "All tensors must be on the same device."
     assert q.dtype == k.dtype == v.dtype, "All tensors must have the same dtype."
-    # FIXME(DefTruth): make sage attention work compatible with distributed 
-    # env, for example, xDiT which launch by torchrun. Without this workaround, 
-    # sage attention will run into illegal memory access error after first 
-    # inference step in distributed env for multi gpus inference. This small
-    # workaround also make sage attention work compatible with torch.compile
-    # through non-fullgraph compile mode.
-    if dist.is_initialized() and dist.get_world_size() > 1:
-        torch.cuda.set_device(v.device)
+
 
     _tensor_layout = 0 if tensor_layout == "NHD" else 1
     _is_caual = 1 if is_causal else 0
@@ -590,13 +591,6 @@ def sageattn_qk_int8_pv_fp8_cuda(
     assert dtype in [torch.float16, torch.bfloat16], "Input tensors must be in dtype of torch.float16 or torch.bfloat16"
     assert q.device == k.device == v.device, "All tensors must be on the same device."
     assert q.dtype == k.dtype == v.dtype, "All tensors must have the same dtype."
-    # FIXME(DefTruth): make sage attention work compatible with distributed 
-    # env, for example, xDiT which launch by torchrun. Without this workaround, 
-    # sage attention will run into illegal memory access error after first 
-    # inference step in distributed env for multi gpus inference. This small
-    # workaround also make sage attention work compatible with torch.compile
-    if dist.is_initialized() and dist.get_world_size() > 1:
-        torch.cuda.set_device(v.device)
 
     _tensor_layout = 0 if tensor_layout == "NHD" else 1
     _is_caual = 1 if is_causal else 0

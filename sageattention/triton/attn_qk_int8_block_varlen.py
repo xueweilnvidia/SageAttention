@@ -20,7 +20,7 @@ import triton.language as tl
 
 @triton.jit
 def _attn_fwd_inner(acc, l_i, m_i, q, q_scale, kv_len,
-                    K_ptrs, K_scale_ptr, V_ptrs, stride_kn, stride_vn, 
+                    K_ptrs, K_scale_ptr, V_ptrs, V_scale_ptr, stride_kn, stride_vn, 
                     start_m,  
                     H: tl.constexpr,
                     BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  
@@ -42,21 +42,30 @@ def _attn_fwd_inner(acc, l_i, m_i, q, q_scale, kv_len,
         l_i = l_i * alpha + l_ij
         
         acc = acc * alpha[:, None]
+
+        p_scale = tl.max(tl.abs(p)) / 448.
+        p_fp8 = p / p_scale
+        p_fp8 = p_fp8.to(tl.float8e4nv)
+        # p_fp8 = p_fp8.to(tl.float16)
         
         v = tl.load(V_ptrs, mask = offs_n[:, None] < (kv_len - start_n))
-        p = p.to(tl.float16)
-        
-        acc += tl.dot(p, v, out_dtype=tl.float16)   
+        v_scale = tl.load(V_scale_ptr)
+        # p = p.to(tl.float16)
+ 
+        accumulator = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+        middle = tl.dot(p_fp8, v, accumulator).to(tl.float32) * v_scale *p_scale
+        acc = acc + middle
         m_i = m_ij
         K_ptrs += BLOCK_N * stride_kn
         K_scale_ptr += H
         V_ptrs += BLOCK_N * stride_vn
+        V_scale_ptr += H
     return acc, l_i
 
 @triton.jit
 def _attn_fwd(Q, K, V, 
               cu_seqlens_q, cu_seqlens_k,
-              Q_scale, K_scale, cu_seqlens_q_scale, cu_seqlens_k_scale,
+              Q_scale, K_scale, V_scale, cu_seqlens_q_scale, cu_seqlens_k_scale,
               Out,  
               stride_qh, stride_qn,
               stride_kh, stride_kn,  
@@ -100,6 +109,7 @@ def _attn_fwd(Q, K, V,
     K_ptrs = K + (cu_seqlens_k_start * stride_kn + (off_h // num_kv_groups) * stride_kh) + offs_n[None, :] * stride_kn + offs_k[:, None] 
     K_scale_ptr = K_scale + k_scale_offset
     V_ptrs = V + (cu_seqlens_k_start * stride_vn + (off_h // num_kv_groups) * stride_vh) + offs_n[:, None] * stride_vn + offs_k[None, :]
+    V_scale_ptr = V_scale + k_scale_offset
     O_block_ptr = Out + (cu_seqlens_q_start * stride_on + off_h * stride_oh) + offs_m[:, None] * stride_on + offs_k[None, :]
     
     m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
@@ -108,7 +118,7 @@ def _attn_fwd(Q, K, V,
     
     q = tl.load(Q_ptrs, mask = offs_m[:, None] < qo_len)
     q_scale = tl.load(Q_scale_ptr)
-    acc, l_i = _attn_fwd_inner(acc, l_i, m_i, q, q_scale, kv_len, K_ptrs, K_scale_ptr, V_ptrs, stride_kn, stride_vn,
+    acc, l_i = _attn_fwd_inner(acc, l_i, m_i, q, q_scale, kv_len, K_ptrs, K_scale_ptr, V_ptrs, V_scale_ptr, stride_kn, stride_vn,
                                     start_m,  
                                     H // num_kv_groups,
                                     BLOCK_M, HEAD_DIM, BLOCK_N,  
@@ -117,7 +127,9 @@ def _attn_fwd(Q, K, V,
     acc = acc / l_i[:, None]
     tl.store(O_block_ptr, acc.to(Out.type.element_ty), mask = (offs_m[:, None] < qo_len))
 
-def forward(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, q_scale, k_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, output_dtype=torch.float16):
+
+
+def forward(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, q_scale, k_scale, v_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, output_dtype=torch.float16):
     BLOCK_M = 128
     BLOCK_N = 64
     stage = 1
@@ -134,7 +146,7 @@ def forward(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, q_scale, k_scale,
     grid = (triton.cdiv(max_seqlen_q, BLOCK_M), h_qo, b)
     _attn_fwd[grid](
         q, k, v, cu_seqlens_q, cu_seqlens_k,
-        q_scale, k_scale, cu_seqlens_q_scale, cu_seqlens_k_scale,
+        q_scale, k_scale, v_scale, cu_seqlens_q_scale, cu_seqlens_k_scale,
         o,  
         q.stride(1), q.stride(0), 
         k.stride(1), k.stride(0),  
