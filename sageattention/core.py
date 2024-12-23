@@ -224,8 +224,8 @@ def sageattn_qk_int8_pv_fp16_triton(
     else:
         km = None
 
-    if dtype == torch.bfloat16 or dtype == torch.float32:
-        v = v.to(torch.float16)
+    # if dtype == torch.bfloat16 or dtype == torch.float32:
+    #     v = v.to(torch.float16)
 
     if sm_scale is None:
         sm_scale = 1.0 / (headdim ** 0.5)

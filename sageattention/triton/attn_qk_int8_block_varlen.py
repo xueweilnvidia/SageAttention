@@ -32,7 +32,8 @@ def _attn_fwd_inner(acc, l_i, m_i, q, q_scale, kv_len,
         k_mask = offs_n[None, :] < (kv_len - start_n)   
         k = tl.load(K_ptrs, mask = k_mask)
         k_scale = tl.load(K_scale_ptr)
-        qk = tl.dot(q, k).to(tl.float32) * q_scale * k_scale 
+        accumulator_0 = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+        qk = tl.dot(q, k, accumulator_0).to(tl.float32) * q_scale * k_scale 
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
         qk = qk - m_ij[:, None]
         p = tl.math.exp2(qk)
@@ -44,7 +45,7 @@ def _attn_fwd_inner(acc, l_i, m_i, q, q_scale, kv_len,
         acc = acc * alpha[:, None]
 
         p_scale = tl.max(tl.abs(p)) / 448.
-        p_fp8 = p / p_scale
+        p_fp8 = p / (p_scale + 1e-8)
         p_fp8 = p_fp8.to(tl.float8e4nv)
         # p_fp8 = p_fp8.to(tl.float16)
         
