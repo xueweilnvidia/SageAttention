@@ -346,7 +346,13 @@ def sageattn_varlen(
     # print(k_fp8.dtype)
     # print(v_fp8.dtype)
     # print(v_fp8.to(torch.float32)* v_scale[0][0])
+    # print(k_scale)
+    # print(k_scale.shape)
+    
+    v_scale = v_scale.repeat_interleave(4, dim=0)[:k_scale.shape[0],:]
+    v_scale = v_scale.contiguous()
     # print(v_scale)
+    # print(v_scale.shape)
     # print("cu_seqlens_k_scale", cu_seqlens_k_scale)
     # print("cu_seqlens_v_scale", cu_seqlens_v_scale)
     # print("finished")
@@ -354,6 +360,7 @@ def sageattn_varlen(
     # if is_causal:
     #     o = attn_true_varlen(q_fp8, k_fp8, v_fp8, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, q_scale, k_scale, v_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, output_dtype=dtype)
     # else:
+    
     o = attn_false_varlen(q_fp8, k_fp8, v_fp8, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, q_scale, k_scale, v_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, output_dtype=dtype)
 
     return o 

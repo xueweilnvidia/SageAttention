@@ -62,7 +62,7 @@ def quant_per_block_int8_kernel(Input, Output, Scale,
     tl.store(scale_ptrs, scale)
 
 # suppose k,v  have same size
-def per_block_int8(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, BLKQ=128, BLKK=64, sm_scale=None):
+def per_block_int8(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, BLKQ=128, BLKK=64, BLKV=256, sm_scale=None):
     q_fp8 = torch.empty(q.shape, dtype=torch.float8_e4m3fn, device=q.device)
     k_fp8 = torch.empty(k.shape, dtype=torch.float8_e4m3fn, device=k.device)
     v_fp8 = torch.empty(v.shape, dtype=torch.float8_e4m3fn, device=v.device)
@@ -78,7 +78,7 @@ def per_block_int8(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen
 
     q_scale_len = (q_batch_len + BLKQ - 1) // BLKQ
     k_scale_len = (k_batch_len + BLKK - 1) // BLKK
-    v_scale_len = k_scale_len
+    v_scale_len = (v_batch_len + BLKV - 1) // BLKV
 
     cu_seqlens_q_scale = torch.nn.functional.pad(torch.cumsum(q_scale_len, dim=0), (1, 0), value=0)
     cu_seqlens_k_scale = torch.nn.functional.pad(torch.cumsum(k_scale_len, dim=0), (1, 0), value=0)
@@ -111,13 +111,14 @@ def per_block_int8(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen
         C=head_dim, BLK=BLKK
     )
 
+    grid = ((max_seqlen_k + BLKV - 1) // BLKV, h_kv, b)
     quant_per_block_int8_kernel[grid](
         v, v_fp8, v_scale,
         cu_seqlens_k, cu_seqlens_v_scale,
         v.stride(1), v.stride(0),
         v_fp8.stride(1), v_fp8.stride(0),
         sm_scale=1.0, H=h_kv,
-        C=head_dim, BLK=BLKK
+        C=head_dim, BLK=BLKV
     )
 
     return q_fp8, q_scale, k_fp8, k_scale, v_fp8, v_scale, cu_seqlens_q_scale, cu_seqlens_k_scale, cu_seqlens_v_scale

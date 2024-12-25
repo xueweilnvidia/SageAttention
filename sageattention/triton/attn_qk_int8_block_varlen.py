@@ -51,7 +51,7 @@ def _attn_fwd_inner(acc, l_i, m_i, q, q_scale, kv_len,
         
         v = tl.load(V_ptrs, mask = offs_n[:, None] < (kv_len - start_n))
         v_scale = tl.load(V_scale_ptr)
-        # p = p.to(tl.float16)
+        # p = p.to(tl.bfloat16)
  
         accumulator = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
         middle = tl.dot(p_fp8, v, accumulator).to(tl.float32) * v_scale *p_scale
