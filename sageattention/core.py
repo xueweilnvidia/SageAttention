@@ -242,8 +242,14 @@ def sageattn_qk_int8_pv_fp16_triton(
         if quantization_backend == "triton":
             print("hello")
             q_int8, q_scale, k_int8, k_scale, v_int8, v_scale = per_block_int8_triton(q, k, v)
-            v_scale = v_scale.repeat_interleave(4, dim=2)[:,:,:k_scale.shape[2],:]
-            v_scale = v_scale.contiguous()
+            # v_scale = v_scale.repeat_interleave(4, dim=2)[:,:,:k_scale.shape[2],:]
+            # v_scale = v_scale.contiguous()
+
+            q_scale = q_scale.repeat_interleave(2, dim=2)[:,:,:v_scale.shape[2],:]
+            q_scale = q_scale.contiguous()
+
+            k_scale = k_scale.repeat_interleave(2, dim=2)[:,:,:v_scale.shape[2],:]
+            k_scale = k_scale.contiguous()
         elif quantization_backend == "cuda":
             q_int8, q_scale, k_int8, k_scale = per_block_int8_cuda(q, k, km=km, sm_scale=sm_scale, tensor_layout=tensor_layout)
         else:

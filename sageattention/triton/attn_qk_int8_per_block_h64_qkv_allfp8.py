@@ -196,9 +196,9 @@ def _attn_fwd(Q, K, V, Q_scale, K_scale, V_scale, Out,
 
 
 def forward(q, k, v, q_scale, k_scale, v_scale):
-    BLOCK_M = 64
-    BLOCK_N = 64
-    BLOCK_K = 64
+    BLOCK_M = 32
+    BLOCK_N = 32
+    BLOCK_K = 32
     HEAD_DIM_K = k.shape[-1]
     o = torch.empty_like(q, dtype=torch.bfloat16)
     stage = 1
