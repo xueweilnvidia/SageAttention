@@ -223,6 +223,8 @@ def sageattn_qk_int8_pv_fp16_triton(
                 lse_correction = torch.matmul(q, km.transpose(2, 3)).squeeze(-1).to(torch.float32)
     else:
         km = None
+    # torch.save(k, "k.pt")
+    k = k - km
 
     # if dtype == torch.bfloat16 or dtype == torch.float32:
     #     v = v.to(torch.float16)
@@ -240,6 +242,8 @@ def sageattn_qk_int8_pv_fp16_triton(
         if quantization_backend == "triton":
             print("hello")
             q_int8, q_scale, k_int8, k_scale, v_int8, v_scale = per_block_int8_triton(q, k, v)
+            v_scale = v_scale.repeat_interleave(4, dim=2)[:,:,:k_scale.shape[2],:]
+            v_scale = v_scale.contiguous()
         elif quantization_backend == "cuda":
             q_int8, q_scale, k_int8, k_scale = per_block_int8_cuda(q, k, km=km, sm_scale=sm_scale, tensor_layout=tensor_layout)
         else:
@@ -247,7 +251,6 @@ def sageattn_qk_int8_pv_fp16_triton(
         if is_causal:
             o, lse = attn_true(q_int8, k_int8, v, q_scale, k_scale, tensor_layout=tensor_layout, output_dtype=dtype, return_lse=return_lse)
         else:
-            print("hello")
             o = attn_false(q_int8, k_int8, v_int8, q_scale, k_scale, v_scale)
 
     if return_lse:

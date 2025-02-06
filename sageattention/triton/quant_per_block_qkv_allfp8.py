@@ -22,7 +22,7 @@ def q_kernel_per_block_int8(X, X_int8, BLK: tl.constexpr, Scale, L, C: tl.conste
     #x_int8 = x_int8.to(tl.int8)
     scale = tl.max(tl.abs(x)) / 448.
 
-    x_int8 = x / scale
+    x_int8 = x / (scale+1e-8)
 
     x_int8 = x_int8.to(tl.float8e4nv)
     tl.store(x_int8_ptrs, x_int8, mask=offs_m[:, None] < L)
@@ -47,7 +47,7 @@ def k_kernel_per_block_int8(X, X_int8, BLK: tl.constexpr, Scale, L, C: tl.conste
     #x_int8 = x_int8.to(tl.int8)
     scale = tl.max(tl.abs(x)) / 448.
 
-    x_int8 = x / scale
+    x_int8 = x / (scale + 1e-8)
 
     x_int8 = x_int8.to(tl.float8e4nv)
     tl.store(x_int8_ptrs, x_int8, mask=offs_m[:, None] < L)
@@ -68,7 +68,7 @@ def v_kernel_per_block_int8(X, X_int8, BLK: tl.constexpr, Scale, L, C: tl.conste
     x = tl.load(x_ptrs, mask=(offs_m[:, None] < L) )
     scale = tl.max(tl.abs(x)) / 448.
 
-    x_int8 = x / scale
+    x_int8 = x / (scale+1e-8)
 
     x_int8 = x_int8.to(tl.float8e4nv)
     #assert x_int8 != x_int8, "The value is not NaN, but it should be!"
@@ -78,7 +78,7 @@ def v_kernel_per_block_int8(X, X_int8, BLK: tl.constexpr, Scale, L, C: tl.conste
     tl.store(scale_ptrs, scale)
 
 
-def per_block_int8_qkv(q, k, v, BLKQ=128, BLKK=64, BLKV=64):
+def per_block_int8_qkv(q, k, v, BLKQ=64, BLKK=64, BLKV=128):
     q_int8 = torch.empty_like(q, dtype=torch.float8_e4m3fn)
     k_int8 = q_int8.clone()
     v_int8 = torch.empty_like(v, dtype=torch.float8_e4m3fn)#torch.int8)

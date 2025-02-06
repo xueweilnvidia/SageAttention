@@ -2,6 +2,104 @@ import torch, math
 import triton
 import triton.language as tl
 
+
+@triton.jit
+def _attn_fwd_inner_fmha_1(acc, l_i, m_i, q, q_scale,
+                    K_ptrs, K_scale_ptr, V_ptrs, V_scale_ptr,  
+                    start_m,  
+                    BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  
+                    STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  
+                    N_CTX: tl.constexpr):
+    lo, hi = 0, N_CTX
+    next_v_scale = tl.load(V_scale_ptr)
+    for start_n in range(lo, hi, BLOCK_N):
+        start_n = tl.multiple_of(start_n, BLOCK_N)
+        k_mask = offs_n[None, :] < (N_CTX - start_n)   
+        k = tl.load(K_ptrs, mask = k_mask)
+        k_scale = tl.load(K_scale_ptr)
+        qk = tl.dot(q, k).to(tl.float32) * q_scale * k_scale
+        m_ij = tl.maximum(m_i, tl.max(qk, 1))
+        qk = qk - m_ij[:, None]
+        p = tl.math.exp2(qk)
+        l_ij = tl.sum(p, 1)
+        
+        alpha = tl.math.exp2(m_i - m_ij)
+        l_i = l_i * alpha + l_ij
+        
+        acc = acc * alpha[:, None]
+ 
+        p_fp8 = (p * 256.0).to(tl.float8e4nv)
+        
+        v = tl.load(V_ptrs, mask = offs_n[:, None] < (N_CTX - start_n))
+        v_scale = next_v_scale
+        if start_n + BLOCK_N < hi:
+            V_scale_ptr += 1
+            next_v_scale = tl.load(V_scale_ptr)
+        else:
+            next_v_scale = 1.0
+        
+        acc = tl.dot(p_fp8, v, acc) * (v_scale / next_v_scale)
+        
+        m_i = m_ij
+        K_ptrs += BLOCK_N * HEAD_DIM
+        K_scale_ptr += 1
+        V_ptrs += BLOCK_N * HEAD_DIM
+ 
+    acc = acc / 256.0
+    return acc, l_i
+
+@triton.jit
+def _attn_fwd_inner_fmha(acc, l_i, m_i, q, q_scale,
+                    K_ptrs, K_scale_ptr, V_ptrs, V_scale_ptr,  
+                    start_m,  
+                    BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  
+                    STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  
+                    N_CTX: tl.constexpr):
+    lo, hi = 0, N_CTX
+    last_scale_v = 0.0
+    for start_n in range(lo, hi, BLOCK_N):
+        start_n = tl.multiple_of(start_n, BLOCK_N)
+        k_mask = offs_n[None, :] < (N_CTX - start_n)   
+        k = tl.load(K_ptrs, mask = k_mask)
+        k_scale = tl.load(K_scale_ptr)
+        qk = tl.dot(q, k).to(tl.float32) * q_scale * k_scale
+        m_ij = tl.maximum(m_i, tl.max(qk, 1))
+        qk = qk - m_ij[:, None]
+        p = tl.math.exp2(qk)
+        l_ij = tl.sum(p, 1)
+        
+        alpha = tl.math.exp2(m_i - m_ij)
+        l_i = l_i * alpha + l_ij
+        
+        acc = acc * alpha[:, None]
+ 
+        p_fp8 = (p * 256.0).to(tl.float8e4nv)
+        
+        v = tl.load(V_ptrs, mask = offs_n[:, None] < (N_CTX - start_n))
+        v_scale = tl.load(V_scale_ptr)
+
+        # temp_last_scale_v = last_scale_v.to(tl.float32)
+        # temp_v_scale = v_scale.to(tl.float32)
+        # div_number = last_scale_v / v_scale
+
+        # accumulator = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+        # temp_pv = tl.dot(p_fp8, v)
+        acc = acc * (last_scale_v / v_scale) + tl.dot(p_fp8, v)
+        # acc = tl.dot(p_fp8, v, acc * (last_scale_v / v_scale))
+        last_scale_v = v_scale
+        
+        m_i = m_ij
+        K_ptrs += BLOCK_N * HEAD_DIM
+        K_scale_ptr += 1
+        V_ptrs += BLOCK_N * HEAD_DIM
+        V_scale_ptr += 1
+        
+    # p_scale = 256.0
+    # p_scale_d = p_scale.to(tl.float32)
+    acc = acc * last_scale_v / 256.0
+    return acc, l_i
+
+
 @triton.jit
 def _attn_fwd_inner(acc, l_i, m_i, q, q_scale, 
                     K_ptrs, K_scale_ptr, V_ptrs, V_scale_ptr,  
@@ -27,7 +125,7 @@ def _attn_fwd_inner(acc, l_i, m_i, q, q_scale,
         acc = acc * alpha[:, None]
 
         p_scale = tl.max(tl.abs(p)) / 448.
-        p_int8 = p / p_scale
+        p_int8 = p / (p_scale + 1e-8)
         p_int8 = p_int8.to(tl.float8e4nv)
 
         
@@ -92,12 +190,13 @@ def _attn_fwd(Q, K, V, Q_scale, K_scale, V_scale, Out,
                                     BLOCK_M, HEAD_DIM, BLOCK_N,  
                                     4 - STAGE, offs_m, offs_n, N_CTX 
                                     )
+    # acc = acc.to(tl.float32)
     acc = acc / l_i[:, None]
     tl.store(O_block_ptr, acc.to(Out.type.element_ty), mask = (offs_m[:, None] < N_CTX))
 
 
 def forward(q, k, v, q_scale, k_scale, v_scale):
-    BLOCK_M = 128
+    BLOCK_M = 64
     BLOCK_N = 64
     BLOCK_K = 64
     HEAD_DIM_K = k.shape[-1]
