@@ -78,7 +78,7 @@ def v_kernel_per_block_int8(X, X_int8, BLK: tl.constexpr, Scale, L, C: tl.conste
     tl.store(scale_ptrs, scale)
 
 
-def per_block_int8_qkv(q, k, v, BLKQ=64, BLKK=64, BLKV=128):
+def per_block_int8_qkv(q, k, v, BLKQ=64, BLKK=64, BLKV=256):
     q_int8 = torch.empty_like(q, dtype=torch.float8_e4m3fn)
     k_int8 = q_int8.clone()
     v_int8 = torch.empty_like(v, dtype=torch.float8_e4m3fn)#torch.int8)
