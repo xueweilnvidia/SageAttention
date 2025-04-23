@@ -18,6 +18,7 @@
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <torch/extension.h>
 
 #include "../wgmma.cuh"
@@ -716,8 +717,9 @@ torch::Tensor qk_int8_sv_f8_accum_f32_attn_inst_buf(
                 kernel,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, sMemSize);
             
+            auto stream = at::cuda::getCurrentCUDAStream().stream();
             dim3 grid(div_ceil(qo_len, CTA_Q), num_qo_heads, batch_size);
-            kernel<<<grid, NUM_THREADS, sMemSize>>>(
+            kernel<<<grid, NUM_THREADS, sMemSize, stream>>>(
               tma_map_Q,
               tma_map_K,
               tma_map_V,
@@ -894,8 +896,9 @@ torch::Tensor qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_inst_buf(
                 kernel,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, sMemSize);
             
+            auto stream = at::cuda::getCurrentCUDAStream().stream();
             dim3 grid(div_ceil(qo_len, CTA_Q), num_qo_heads, batch_size);
-            kernel<<<grid, NUM_THREADS, sMemSize>>>(
+            kernel<<<grid, NUM_THREADS, sMemSize, stream>>>(
               tma_map_Q,
               tma_map_K,
               tma_map_V,
